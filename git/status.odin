@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:strings"
 
 Status :: enum {
+	None,
 	Untracked,
 	Ignored,
 	Modified,
@@ -18,10 +19,11 @@ Status :: enum {
 }
 
 // For now just do indexed and workting tree counts
-StatusCount :: [Status][1]int
+StatusCount :: [Status][2]int
 
-status_count_inc :: proc(status: ^GitStatus, type: Status) {
-	status.statuses[type][0] += 1
+Status_Index :: enum {
+	Index,
+	WorkingDir,
 }
 
 Status_Error :: enum {
@@ -29,7 +31,6 @@ Status_Error :: enum {
 }
 
 GitStatus :: struct {
-	is_repo:  bool,
 	head:     string,
 	statuses: StatusCount,
 }
@@ -44,18 +45,14 @@ LineType :: enum {
 	Empty,
 }
 
-parse_status_line :: proc(status: ^GitStatus, cmd: ^cmd.Command) {
+parse_status_from_command :: proc(status: ^GitStatus, command: ^cmd.Command) {
 	branchLines := 0
-	status.is_repo = true
 
-	for line, i in cmd.lines {
-		fmt.println(line)
-
+	for line, i in command.lines {
 		type := line_type(line)
 
 		#partial switch type {
 		case .Fatal:
-			status.is_repo = false
 			return
 
 		case .Branch:
@@ -67,21 +64,39 @@ parse_status_line :: proc(status: ^GitStatus, cmd: ^cmd.Command) {
 			}
 
 		case .Untracked:
-			status_count_inc(status, .Untracked)
-		//counts[.Untracked][0] += 1
+			status_count_inc(status, .WorkingDir, .Untracked)
 		case .Ignored:
-			status_count_inc(status, .Ignored)
+			status_count_inc(status, .WorkingDir, .Ignored)
+		case .ChangeEntry:
+			parse_change_entry(status, line)
 		}
 	}
 
-	fmt.printfln("%v", status)
+	//fmt.printfln("%v", status)
 }
+
+parse_change_entry :: proc(status: ^GitStatus, line: string) {
+	assert(len(line) >= 4, "cannot parse change entry line with length < 4")
+
+	index_symbol := line[2]
+	wd_symbol := line[3]
+
+	index_status := status_from_symbol(index_symbol)
+	wd_status := status_from_symbol(wd_symbol)
+
+	status_count_inc(status, .Index, index_status)
+	status_count_inc(status, .WorkingDir, wd_status)
+}
+
+status_count_inc :: proc(status: ^GitStatus, index: Status_Index, type: Status) {
+	status.statuses[type][index] += 1
+}
+
 
 line_type :: proc(line: string) -> LineType {
 	if len(line) == 0 {
 		return .Empty
 	}
-	fmt.println("line", strings.index(line, "fatal"))
 
 	switch line[0] {
 	case '#':
@@ -125,7 +140,7 @@ status_symbol :: proc(status: Status) -> string {
 		return "C"
 	case .UpdatedUnmerged:
 		return "U"
-	case .Unknown:
+	case .None, .Unknown:
 		return ""
 	}
 
@@ -133,27 +148,29 @@ status_symbol :: proc(status: Status) -> string {
 }
 
 // https://git-scm.com/docs/git-status
-status_from_symbol :: proc(symbol: string) -> (Status, Status_Error) {
+status_from_symbol :: proc(symbol: u8) -> Status {
 	switch symbol {
-	case "?":
-		return .Untracked, nil
-	case "!":
-		return .Ignored, nil
-	case "M":
-		return .Modified, nil
-	case "T":
-		return .TypeChanged, nil
-	case "A":
-		return .Added, nil
-	case "D":
-		return .Deleted, nil
-	case "R":
-		return .Renamed, nil
-	case "C":
-		return .Copied, nil
-	case "U":
-		return .UpdatedUnmerged, nil
+	case '.':
+		return .None
+	case '?':
+		return .Untracked
+	case '!':
+		return .Ignored
+	case 'M':
+		return .Modified
+	case 'T':
+		return .TypeChanged
+	case 'A':
+		return .Added
+	case 'D':
+		return .Deleted
+	case 'R':
+		return .Renamed
+	case 'C':
+		return .Copied
+	case 'U':
+		return .UpdatedUnmerged
 	}
 
-	return .Unknown, Status_Error.UnknownStatus
+	return .Unknown
 }

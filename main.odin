@@ -3,6 +3,7 @@ package main
 import "cmd"
 import "core:fmt"
 import "core:os"
+import "format"
 import "git"
 
 main :: proc() {
@@ -14,26 +15,41 @@ main :: proc() {
 		pwd = args[0]
 	}
 
-	command := cmd.Command {
+	status_command := cmd.Command {
 		pwd     = pwd,
 		command = {"git", "status", "--porcelain=v2", "--branch", "--untracked=all"},
 	}
 
-	if err := cmd.run(&command); err != nil {
+
+	if err := cmd.run(&status_command); err != nil {
 		fmt.printf("error running command: %s", err)
 		return
 	}
 
-	if !command.state.success {
-		os.exit(command.state.exit_code)
+	defer cmd.command_destory(&status_command)
+
+	base_command := cmd.Command {
+		pwd     = pwd,
+		command = {"git", "rev-parse", "--show-toplevel"},
 	}
 
-	fmt.println("ec:", command.state.exit_code, command.state.success)
+	if err := cmd.run(&base_command); err != nil {
+		fmt.printfln("error running base command: %s", err)
+		return
+	}
+
+	defer cmd.command_destory(&base_command)
+
+	fmt.println(base_command.lines)
 
 	gs: git.GitStatus
-	git.parse_status_line(&gs, &command)
+	git.parse_status_from_command(&gs, &status_command)
 
-	//for l in command.lines {
-	//	fmt.println(l)
-	//}
+	//str := format.color(.Blue, gs.head)
+	//fmt.print(str)
+
+	gb: git.GitBase
+	git.parse_base_from_command(&gb, &base_command)
+
+	fmt.println(gb.base)
 }

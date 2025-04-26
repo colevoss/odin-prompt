@@ -11,56 +11,91 @@ Command :: struct {
 	pwd:     string,
 	command: []string,
 	lines:   []string,
+	error:   string,
 }
 
-run :: proc(cmd: ^Command) -> os.Error {
-	//in_r, in_w := os.pipe() or_return
-	out_r, out_w := os.pipe() or_return
-	//err_r, err_w := os.pipe() or_return
+command_destory :: proc(c: ^Command) {
+	delete(c.lines)
+	delete(c.error)
+}
 
-	defer os.close(out_r)
+run :: proc(cmd: ^Command, allocator := context.allocator) -> os.Error {
+	//in_r, in_w := os.pipe() or_return
+	stdout_r, stdout_w := os.pipe() or_return
+	stderr_r, stderr_w := os.pipe() or_return
+
+	defer os.close(stdout_r)
+	defer os.close(stderr_r)
 
 	p: os.Process;{
-		defer os.close(out_w)
+		// ensure writers close so readers can start
+		defer os.close(stdout_w)
+		defer os.close(stderr_w)
 
 		p = os.process_start(
-		{
-			working_dir = cmd.pwd,
-			command     = cmd.command,
-			stdout      = out_w,
-			// stdin = in_r
-		},
+			{working_dir = cmd.pwd, command = cmd.command, stdout = stdout_w, stderr = stderr_w},
 		) or_return
 	}
 
 	cmd.p = p
 
 	lines: [dynamic]string
-	buf: [1024]byte
-	r: bufio.Reader
+	buf: [1024]byte = ---
+	out_reader: bufio.Reader
+	bufio.reader_init_with_buf(&out_reader, stdout_r.stream, buf[:])
+	defer bufio.reader_destroy(&out_reader)
 
-	bufio.reader_init_with_buf(&r, out_r.stream, buf[:])
-	defer bufio.reader_destroy(&r)
+	err_data: [dynamic]byte
+	err_buf: [1024]byte = ---
+	err_reader: bufio.Reader
+	bufio.reader_init_with_buf(&err_reader, stderr_r.stream, err_buf[:])
+	defer bufio.reader_destroy(&err_reader)
 
-	for {
-		line, err := bufio.reader_read_string(&r, '\n', context.allocator)
+	stdout_has_data := true
+	stderr_has_data := true
 
-		if err == io.Error.EOF {
-			break
+	for stdout_has_data || stderr_has_data {
+		out_blk: {
+
+			if stdout_has_data {
+				line, err := bufio.reader_read_string(&out_reader, '\n', context.allocator)
+
+				if err == io.Error.EOF {
+					stdout_has_data = false
+					break out_blk
+				}
+
+				if err != nil {
+					return err
+				}
+
+				line = strings.trim_right(line, "\r\n")
+				append(&lines, line)
+			}
 		}
 
-		if err != nil {
-			return err
-		}
+		err_blk: {
+			if stderr_has_data {
+				n, err := bufio.reader_read(&err_reader, err_buf[:])
 
-		line = strings.trim_right(line, "\r\n")
-		append(&lines, line)
+				#partial switch err {
+				case nil:
+					append(&err_data, ..err_buf[:n])
+				case io.Error.EOF:
+					stderr_has_data = false
+					break err_blk
+				case:
+					return err
+				}
+			}
+		}
 	}
 
-	state := os.process_wait(p) or_return
+	cmd.lines = lines[:]
+	cmd.error = strings.trim_right(string(err_data[:]), "\n")
+
+	state, err := os.process_wait(p)
 	cmd.state = state
 
-	cmd.lines = lines[:]
-
-	return nil
+	return err
 }
